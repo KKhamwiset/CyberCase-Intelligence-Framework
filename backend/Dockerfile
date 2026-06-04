@@ -11,9 +11,8 @@ RUN apt-get update && apt-get install -y \
     poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy backend requirements and install
-# Use --extra-index-url for CPU-only torch to save space
-COPY backend/requirements.txt .
+# Copy requirements from root and install
+COPY requirements.txt .
 RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu \
     torch torchvision torchaudio \
     && pip install --no-cache-dir -r requirements.txt
@@ -22,9 +21,6 @@ RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/wh
 COPY backend/app ./app
 COPY backend/alembic ./alembic
 COPY backend/alembic.ini .
-
-# Copy RAG engine and MITRE data
-COPY backend/RAG ./RAG
 
 # Expose FastAPI port
 EXPOSE 8000
