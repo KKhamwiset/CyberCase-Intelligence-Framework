@@ -364,6 +364,10 @@ export interface components {
             associations_outside_context: number;
             associations_without_claim: number;
             summary_ids_unknown: number;
+            evidence_ids_claimed: number;
+            evidence_ids_resolved: number;
+            evidence_ids_invalid: number;
+            claims_with_direct_evidence: number;
             sources_cited: number;
             sources_total: number;
         };
@@ -460,6 +464,10 @@ export interface components {
             document_id?: string | null;
             filename?: string | null;
             page_numbers?: number[];
+            evidence_unit_ids?: string[];
+            start?: number | null;
+            end?: number | null;
+            pointer?: ("direct" | "recovered" | "unresolved") | null;
             context?: components["schemas"]["CaseQuoteContext"] | null;
             tolerated_differences?: components["schemas"]["CaseQuoteDifference"][];
             review_flags?: components["schemas"]["CaseReviewFlag"][];
@@ -506,6 +514,9 @@ export interface components {
             source_id: string;
             role: "supporting" | "contradicting";
             written_quote: string;
+            evidence_unit_ids?: string[];
+            reason?: ("malformed" | "unknown_source" | "wrong_source" | "unknown_unit") | null;
+            pointer?: ("direct" | "recovered" | "unresolved") | null;
             near_passage?: components["schemas"]["CaseNearPassage"] | null;
             meaning_passage?: components["schemas"]["CaseMeaningPassage"] | null;
         };

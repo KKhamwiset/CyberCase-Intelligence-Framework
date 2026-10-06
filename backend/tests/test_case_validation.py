@@ -282,6 +282,7 @@ def test_provider_output_is_normalized_instead_of_rejected():
     assert parsed.claims[0].supporting_citations[0].model_dump() == {
         "source_id": "s1",
         "exact_quote": "Files were encrypted.",
+        "evidence_unit_ids": [],
     }
     assert parsed.gaps[0].gap_key == "incident time"
     assert parsed.gaps[0].topic == "Incident time"

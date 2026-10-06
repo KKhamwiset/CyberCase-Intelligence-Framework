@@ -219,6 +219,51 @@ CASE_READING_JSON_PROMPT = (
     CASE_READING_SYSTEM_PROMPT.replace(READING_LOCATOR_SENTENCE, "") + READING_JSON_FORMAT
 )
 
+READING_QUOTE_BULLET = (
+    "- For each supporting or contradicting source, copy one specific exact quote from the\n"
+    "  case source text. Leave document_id and filename null and page_numbers empty so the\n"
+    "  backend can attach document locations.\n"
+)
+
+READING_EVIDENCE_BULLET = (
+    "- Every source in case_sources is cut into evidence_units, each with a unit_id. For each\n"
+    "  supporting or contradicting source, list in evidence_unit_ids the unit_id of every unit\n"
+    "  that states what the claim says, at most 8 per citation. Copy each unit_id exactly and\n"
+    "  write no quotation: the backend reads the text from the unit. Cite only units of the\n"
+    "  source named in that citation's source_id.\n"
+)
+
+READING_FOLLOWUP_QUOTE_PHRASE = "cite it by its qa_id, quoting the answer text exactly."
+
+READING_FOLLOWUP_EVIDENCE_PHRASE = (
+    "cite it with its qa_id as the source_id and the unit_ids of its evidence_units."
+)
+
+READING_EVIDENCE_JSON_FORMAT = """
+
+Output format:
+- Reply with one JSON object and nothing else. Write every key below, in exactly this order, even when a list is empty:
+{"version": "case_analysis_trace_v1",
+ "claims": [{"claim_id": "A-01", "claim_type": "reported", "text": "...", "epistemic_status": "reported",
+   "supporting_source_ids": ["SRC-1"], "contradicting_source_ids": [],
+   "reasoning_summary": "...",
+   "supporting_citations": [{"source_id": "SRC-1", "evidence_unit_ids": ["SRC-1:U-0001", "SRC-1:U-0002"]}],
+   "contradicting_citations": []}],
+ "involved_parties": [{"name": "...", "role": "...", "claim_ids": ["A-01"]}],
+ "timeline": [{"time": "...", "event": "...", "claim_ids": ["A-01"]}],
+ "impacts": [{"description": "...", "claim_ids": ["A-01"]}]}
+- claim_type is one of "reported", "analytical_inference", "unknown". epistemic_status is one of "reported",
+  "suspected", "contradicted", "not_established", "unknown".
+- reasoning_summary is one short sentence saying why the cited units support the claim, or null.
+- Inside any string, write a double quotation mark as \\" so the JSON stays valid."""
+
+CASE_READING_EVIDENCE_PROMPT = (
+    CASE_READING_SYSTEM_PROMPT.replace(READING_QUOTE_BULLET, READING_EVIDENCE_BULLET).replace(
+        READING_FOLLOWUP_QUOTE_PHRASE, READING_FOLLOWUP_EVIDENCE_PHRASE
+    )
+    + READING_EVIDENCE_JSON_FORMAT
+)
+
 CASE_JUDGEMENT_SYSTEM_PROMPT = f"""
 You are the Judgement component of CyberCase. The claims supplied to you were
 already read out of this case. Say what they add up to, for investigators or
@@ -324,6 +369,7 @@ Do not return hidden reasoning or markdown fences around the JSON.
 
 __all__ = [
     "CASE_JUDGEMENT_SYSTEM_PROMPT",
+    "CASE_READING_EVIDENCE_PROMPT",
     "CASE_READING_JSON_PROMPT",
     "CASE_READING_SYSTEM_PROMPT",
     "READING_JSON_FORMAT",

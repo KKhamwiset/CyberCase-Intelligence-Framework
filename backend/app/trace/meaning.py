@@ -96,6 +96,7 @@ def eligible_citations(
         if claim.epistemic_status == "not_confirmed"
         for citation_at, citation in enumerate(claim.unverified_citations)
         if citation.role == "supporting"
+        and citation.written_quote
         and citation.near_passage is None
         and citation.source_id in registry
     ]

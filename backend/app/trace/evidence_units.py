@@ -4,16 +4,13 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Literal
 
 from app.sources.bundle import CaseSourceItem
+from app.trace.claims import UnitRejection
 from app.trace.quotes import MAX_QUOTE_CHARS
 from app.trace.sentences import sentence_spans
 
-MAX_EVIDENCE_UNITS_PER_CITATION = 8
 UNIT_REFERENCE = re.compile(r"(?P<source>.+):U-(?P<number>\d+)")
-
-UnitRejection = Literal["malformed", "unknown_source", "wrong_source", "unknown_unit"]
 
 
 @dataclass(frozen=True)
@@ -112,7 +109,6 @@ class EvidenceUnitRegistry:
 
 
 __all__ = [
-    "MAX_EVIDENCE_UNITS_PER_CITATION",
     "EvidenceUnit",
     "EvidenceUnitRegistry",
     "UnitRejection",

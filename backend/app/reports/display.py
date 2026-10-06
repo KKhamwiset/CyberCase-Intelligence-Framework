@@ -289,6 +289,7 @@ def unverified_quotes(claim: CaseAnalysisClaim) -> list[ReportUnverifiedQuote]:
             ),
         )
         for item in claim.unverified_citations
+        if item.written_quote
     ]
 
 

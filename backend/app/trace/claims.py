@@ -27,6 +27,14 @@ MAX_CLARIFICATION_QUESTION_CHARS = 300
 MAX_CONTEXT_CHARS = 400
 MAX_REVIEW_FLAGS = 8
 MAX_MEANING_PASSAGE_CHARS = 4_000
+MAX_EVIDENCE_UNITS_PER_CITATION = 8
+MAX_EVIDENCE_REFERENCE_CHARS = 200
+
+CitationMode = Literal["evidence_unit", "legacy_quote"]
+
+EvidencePointer = Literal["direct", "recovered", "unresolved"]
+
+UnitRejection = Literal["malformed", "unknown_source", "wrong_source", "unknown_unit"]
 
 
 CaseClaimType = Literal["reported", "analytical_inference", "unknown"]
@@ -75,11 +83,31 @@ def empty_as_none(value: object) -> object:
     return value
 
 
+def unique_evidence_references(value: object) -> object:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        value = [value]
+    references: list[str] = []
+    for item in value:
+        if item is None or isinstance(item, bool):
+            continue
+        reference = (item if isinstance(item, str) else str(item)).strip()
+        if reference and reference not in references:
+            references.append(reference[:MAX_EVIDENCE_REFERENCE_CHARS])
+    return references[:MAX_EVIDENCE_UNITS_PER_CITATION]
+
+
 def clipped(limit: int) -> BeforeValidator:
     return BeforeValidator(lambda value: value.strip()[:limit] if isinstance(value, str) else value)
 
 
 ClaimIds = Annotated[list[str], BeforeValidator(unique_claim_ids)]
+EvidenceReferences = Annotated[
+    list[str],
+    BeforeValidator(unique_evidence_references),
+    Field(default_factory=list, max_length=MAX_EVIDENCE_UNITS_PER_CITATION),
+]
 ReasoningSummary = Annotated[str | None, BeforeValidator(empty_as_none), clipped(1_000)]
 
 
@@ -115,6 +143,10 @@ class CaseSourceCitation(BaseModel):
     document_id: str | None = Field(default=None, min_length=1, max_length=160)
     filename: str | None = Field(default=None, min_length=1, max_length=255)
     page_numbers: list[int] = Field(default_factory=list, max_length=MAX_PAGE_SPANS_PER_QUOTE)
+    evidence_unit_ids: EvidenceReferences
+    start: int | None = Field(default=None, ge=0)
+    end: int | None = Field(default=None, gt=0)
+    pointer: EvidencePointer | None = None
     context: CaseQuoteContext | None = None
     tolerated_differences: list[CaseQuoteDifference] = Field(
         default_factory=list, max_length=MAX_TOLERATED_DIFFERENCES
@@ -148,6 +180,9 @@ class CaseSourceCitation(BaseModel):
             self.document_id = None
             self.filename = None
             self.page_numbers = []
+        if self.start is None or self.end is None or self.end <= self.start:
+            self.start = None
+            self.end = None
         return self
 
 
@@ -155,7 +190,14 @@ class CaseProviderCitation(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     source_id: str = Field(min_length=1, max_length=160)
-    exact_quote: str = Field(min_length=1, max_length=MAX_QUOTE_CHARS)
+    exact_quote: str = Field(default="", max_length=MAX_QUOTE_CHARS)
+    evidence_unit_ids: EvidenceReferences
+
+    @model_validator(mode="after")
+    def names_its_evidence(self) -> CaseProviderCitation:
+        if not self.exact_quote.strip() and not self.evidence_unit_ids:
+            raise ValueError("a citation needs evidence_unit_ids or an exact_quote")
+        return self
 
 
 class CaseNearPassage(BaseModel):
@@ -183,7 +225,10 @@ class CaseUnverifiedCitation(BaseModel):
 
     source_id: str = Field(min_length=1, max_length=160)
     role: Literal["supporting", "contradicting"]
-    written_quote: str = Field(min_length=1, max_length=MAX_QUOTE_CHARS)
+    written_quote: str = Field(default="", max_length=MAX_QUOTE_CHARS)
+    evidence_unit_ids: EvidenceReferences
+    reason: UnitRejection | None = None
+    pointer: EvidencePointer | None = None
     near_passage: CaseNearPassage | None = None
     meaning_passage: CaseMeaningPassage | None = None
 
@@ -259,16 +304,25 @@ class CaseAnalysisClaim(CaseClaimFields):
     reasoning_summary: ReasoningSummary = Field(default=None, max_length=1_000)
 
 
+CITATION_FIELDS_HIDDEN_FROM_MODELS = {
+    "tolerated_differences",
+    "review_flags",
+    "evidence_unit_ids",
+    "start",
+    "end",
+    "pointer",
+}
+
 CLAIM_FIELDS_HIDDEN_FROM_MODELS = {
     "unverified_citations": True,
-    "supporting_citations": {"__all__": {"tolerated_differences", "review_flags"}},
-    "contradicting_citations": {"__all__": {"tolerated_differences", "review_flags"}},
+    "supporting_citations": {"__all__": CITATION_FIELDS_HIDDEN_FROM_MODELS},
+    "contradicting_citations": {"__all__": CITATION_FIELDS_HIDDEN_FROM_MODELS},
 }
 
 CLAIM_FIELDS_HIDDEN_FROM_JUDGEMENT = {
     "unverified_citations": True,
-    "supporting_citations": {"__all__": {"tolerated_differences", "context", "review_flags"}},
-    "contradicting_citations": {"__all__": {"tolerated_differences", "context", "review_flags"}},
+    "supporting_citations": {"__all__": {*CITATION_FIELDS_HIDDEN_FROM_MODELS, "context"}},
+    "contradicting_citations": {"__all__": {*CITATION_FIELDS_HIDDEN_FROM_MODELS, "context"}},
 }
 
 
@@ -276,16 +330,28 @@ def normalized_citation(data: object) -> dict[str, object] | None:
     if not isinstance(data, dict):
         return None
     source_id = data.get("source_id")
-    quote = data.get("exact_quote")
+    quote = data.get("exact_quote", "")
+    if quote is None:
+        quote = ""
     if not isinstance(source_id, str) or not isinstance(quote, str):
         return None
     source_id = source_id.strip()
     quote = quote.strip()
-    if not source_id or not quote or len(source_id) > 160 or len(quote) > MAX_QUOTE_CHARS:
+    evidence_unit_ids = unique_evidence_references(data.get("evidence_unit_ids"))
+    if (
+        not source_id
+        or not (quote or evidence_unit_ids)
+        or len(source_id) > 160
+        or len(quote) > MAX_QUOTE_CHARS
+    ):
         return None
     return {
         "source_id": source_id,
         "exact_quote": quote,
+        "evidence_unit_ids": evidence_unit_ids,
+        "start": data.get("start") if isinstance(data.get("start"), int) else None,
+        "end": data.get("end") if isinstance(data.get("end"), int) else None,
+        "pointer": data.get("pointer") if data.get("pointer") in ("direct", "recovered") else None,
         "document_id": bounded_locator(data.get("document_id"), 160),
         "filename": bounded_locator(data.get("filename"), 255),
         "page_numbers": data.get("page_numbers")

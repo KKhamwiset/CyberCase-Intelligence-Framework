@@ -106,24 +106,26 @@ export function buildCaseOverview(
       techniqueIds: associations
         .filter((association) => association.claim_ids.includes(claim.claim_id))
         .map((association) => association.technique_id),
-      unverifiedQuotes: (claim.unverified_citations ?? []).map((item) => ({
-        writtenQuote: item.written_quote,
-        places: (item.near_passage?.differences ?? []).map(({ written, source }) => ({
-          written,
-          source,
+      unverifiedQuotes: (claim.unverified_citations ?? [])
+        .filter((item) => item.written_quote)
+        .map((item) => ({
+          writtenQuote: item.written_quote,
+          places: (item.near_passage?.differences ?? []).map(({ written, source }) => ({
+            written,
+            source,
+          })),
+          passage: item.near_passage
+            ? passageRef(sources, item.source_id, item.near_passage.source_text)
+            : null,
+          meaningPassage: item.meaning_passage
+            ? passageRef(
+                sources,
+                item.source_id,
+                item.meaning_passage.source_text,
+                meaningLine(incidentSummary),
+              )
+            : null,
         })),
-        passage: item.near_passage
-          ? passageRef(sources, item.source_id, item.near_passage.source_text)
-          : null,
-        meaningPassage: item.meaning_passage
-          ? passageRef(
-              sources,
-              item.source_id,
-              item.meaning_passage.source_text,
-              meaningLine(incidentSummary),
-            )
-          : null,
-      })),
     };
   });
   const backing = claimBacking(findings);

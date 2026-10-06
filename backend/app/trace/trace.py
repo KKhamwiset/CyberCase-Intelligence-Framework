@@ -129,6 +129,10 @@ class CaseGroundingReport(BaseModel):
     associations_outside_context: int = 0
     associations_without_claim: int = 0
     summary_ids_unknown: int = 0
+    evidence_ids_claimed: int = 0
+    evidence_ids_resolved: int = 0
+    evidence_ids_invalid: int = 0
+    claims_with_direct_evidence: int = 0
     sources_cited: int = 0
     sources_total: int = 0
 

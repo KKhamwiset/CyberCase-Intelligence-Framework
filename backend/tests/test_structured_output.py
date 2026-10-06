@@ -44,7 +44,7 @@ def test_claims_are_written_before_the_fields_that_point_at_them() -> None:
 def test_the_provider_is_not_asked_for_document_locators() -> None:
     schema = structured_output_schema(CaseProviderAnalysis)
     citation = schema["$defs"]["CaseProviderCitation"]
-    assert set(citation["properties"]) == {"source_id", "exact_quote"}
+    assert set(citation["properties"]) == {"source_id", "exact_quote", "evidence_unit_ids"}
 
 
 @pytest.mark.parametrize(
