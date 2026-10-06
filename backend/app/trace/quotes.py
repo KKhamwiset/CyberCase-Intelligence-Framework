@@ -431,6 +431,17 @@ def nearest_words(
     return list(range(chosen[0][0], chosen[-1][1] + 1))
 
 
+def only_locator(candidates: set[tuple[str, str, tuple[int, ...]]]) -> dict[str, object]:
+    if len(candidates) != 1:
+        return {"document_id": None, "filename": None, "page_numbers": []}
+    document_id, filename, page_numbers = next(iter(candidates))
+    return {
+        "document_id": document_id,
+        "filename": filename,
+        "page_numbers": list(page_numbers),
+    }
+
+
 def resolve_document_locator(
     source_id: str,
     quote: str,
@@ -443,14 +454,22 @@ def resolve_document_locator(
         locator = find_document_locator(document, content, occurrences, len(quote))
         if locator is not None:
             candidates.add(locator)
-    if len(candidates) != 1:
-        return {"document_id": None, "filename": None, "page_numbers": []}
-    document_id, filename, page_numbers = candidates.pop()
-    return {
-        "document_id": document_id,
-        "filename": filename,
-        "page_numbers": list(page_numbers),
-    }
+    return only_locator(candidates)
+
+
+def resolve_span_locator(
+    source_id: str,
+    start: int,
+    end: int,
+    content: str,
+    document_context: object,
+) -> dict[str, object]:
+    candidates: set[tuple[str, str, tuple[int, ...]]] = set()
+    for document in extract_documents_for_source(source_id, document_context):
+        locator = find_document_locator(document, content, [start], end - start)
+        if locator is not None:
+            candidates.add(locator)
+    return only_locator(candidates)
 
 
 def extract_documents_for_source(source_id: str, context: object) -> list[Mapping[str, object]]:
@@ -690,6 +709,7 @@ __all__ = [
     "nearest_passage",
     "quote_occurrences",
     "resolve_document_locator",
+    "resolve_span_locator",
     "tolerated_differences",
     "validate_page_spans",
     "without_edge_ellipses",

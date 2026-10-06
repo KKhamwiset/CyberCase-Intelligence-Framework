@@ -100,7 +100,11 @@ def quote_context(index: SentenceIndex, quote: str) -> CaseQuoteContext | None:
     start = text.find(quote) if quote else -1
     if start < 0 or text.find(quote, start + 1) >= 0:
         return None
-    end = start + len(quote)
+    return span_context(index, start, start + len(quote))
+
+
+def span_context(index: SentenceIndex, start: int, end: int) -> CaseQuoteContext | None:
+    text = index.text
     first_line, last_line = index.line_of(start), index.line_of(end - 1)
     touching = [
         span
@@ -130,6 +134,7 @@ __all__ = [
     "Sentence",
     "SentenceIndex",
     "quote_context",
+    "span_context",
     "sentence_spans",
     "split_sources",
     "split_text",

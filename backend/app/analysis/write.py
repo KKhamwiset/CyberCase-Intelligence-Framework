@@ -8,19 +8,26 @@ from fastapi import status
 from pydantic import ValidationError
 
 from app.analysis.progress import announce
-from app.analysis.prompts import CASE_JUDGEMENT_SYSTEM_PROMPT, CASE_READING_JSON_PROMPT
+from app.analysis.prompts import (
+    CASE_JUDGEMENT_SYSTEM_PROMPT,
+    CASE_READING_EVIDENCE_PROMPT,
+    CASE_READING_JSON_PROMPT,
+)
 from app.analysis.technical_context.contracts import CaseRagContextPayload
+from app.config import settings
 from app.errors import CaseAnalysisFailure
 from app.llm.request import request_stage
 from app.llm.settings import AnalysisPipelineConfig
 from app.sources.bundle import CaseSourceBundle, CaseSourceItem
-from app.trace.bind import bound_claims
+from app.trace.bind import bound_claims, case_registry
 from app.trace.claims import (
     CLAIM_FIELDS_HIDDEN_FROM_JUDGEMENT,
     CaseAnalysisClaim,
     CaseFollowupExchange,
+    CitationMode,
     followup_payload,
 )
+from app.trace.evidence_units import EvidenceUnit, EvidenceUnitRegistry
 from app.trace.trace import (
     CaseAnalysisTrace,
     CaseGroundingReport,
@@ -39,18 +46,26 @@ async def write_trace(
     followup_history: Sequence[CaseFollowupExchange] = (),
     technical_context: CaseRagContextPayload | None = None,
     config: AnalysisPipelineConfig,
+    citation_mode: CitationMode | None = None,
 ) -> CaseAnalysisTrace:
+    citation_mode = citation_mode or settings.citation_mode
     announce("read")
     reply = await request_stage(
         config=config,
         stage="case_reading",
-        system=CASE_READING_JSON_PROMPT,
-        content=reading_request(sources, language, followup_history),
+        system=(
+            CASE_READING_EVIDENCE_PROMPT
+            if citation_mode == "evidence_unit"
+            else CASE_READING_JSON_PROMPT
+        ),
+        content=reading_request(sources, language, followup_history, citation_mode=citation_mode),
         schema=CaseProviderReadingReply,
         grammar=False,
     )
     announce("bind")
-    reading, grounding = await checked_reading(reading_from(reply), sources, followup_history)
+    reading, grounding = await checked_reading(
+        reading_from(reply), sources, followup_history, citation_mode=citation_mode
+    )
     announce("judge")
     judgement = await request_stage(
         config=config,
@@ -66,9 +81,13 @@ async def checked_reading(
     reading: CaseProviderReading,
     sources: CaseSourceBundle,
     followup_history: Sequence[CaseFollowupExchange],
+    *,
+    citation_mode: CitationMode = "legacy_quote",
 ) -> tuple[CaseProviderReading, CaseGroundingReport]:
     try:
-        return await asyncio.to_thread(bound_claims, reading, sources, followup_history)
+        return await asyncio.to_thread(
+            bound_claims, reading, sources, followup_history, citation_mode=citation_mode
+        )
     except ValidationError as error:
         logger.exception("Checking the reading against the case built an invalid trace")
         raise CaseAnalysisFailure(
@@ -94,11 +113,50 @@ def reading_request(
     sources: CaseSourceBundle,
     language: str,
     followup_history: Sequence[CaseFollowupExchange],
+    *,
+    citation_mode: CitationMode = "legacy_quote",
 ) -> dict[str, object]:
+    if citation_mode == "legacy_quote":
+        return {
+            "response_language": language,
+            "case_sources": [provider_source_payload(source) for source in sources.sources],
+            "followup_history": followup_payload(followup_history),
+        }
+    units = EvidenceUnitRegistry(case_registry(sources, followup_history))
     return {
         "response_language": language,
-        "case_sources": [provider_source_payload(source) for source in sources.sources],
-        "followup_history": followup_payload(followup_history),
+        "case_sources": [
+            evidence_source_payload(source, units.units(source.source_id))
+            for source in sources.sources
+        ],
+        "followup_history": [
+            evidence_followup_payload(entry, units.units(entry["qa_id"]))
+            for entry in followup_payload(followup_history)
+        ],
+    }
+
+
+def unit_payload(unit: EvidenceUnit) -> dict[str, str]:
+    return {"unit_id": unit.unit_id, "text": unit.text}
+
+
+def evidence_source_payload(
+    source: CaseSourceItem, units: Sequence[EvidenceUnit]
+) -> dict[str, object]:
+    payload = provider_source_payload(source)
+    del payload["text"]
+    payload["evidence_units"] = [unit_payload(unit) for unit in units]
+    return payload
+
+
+def evidence_followup_payload(
+    entry: dict[str, str], units: Sequence[EvidenceUnit]
+) -> dict[str, object]:
+    return {
+        "qa_id": entry["qa_id"],
+        "gap_key": entry["gap_key"],
+        "question": entry["question"],
+        "evidence_units": [unit_payload(unit) for unit in units],
     }
 
 

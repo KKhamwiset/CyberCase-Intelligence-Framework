@@ -93,6 +93,7 @@ def written(bundle: CaseSourceBundle, reading: CaseProviderReading, **options):
                 sources=bundle,
                 language=options.pop("language", "english"),
                 config=AnalysisPipelineConfig(),
+                citation_mode=options.pop("citation_mode", "legacy_quote"),
                 **options,
             )
         )

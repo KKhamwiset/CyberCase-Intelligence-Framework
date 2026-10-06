@@ -15,7 +15,9 @@ from app.trace.claims import (
     CaseReviewFlag,
     CaseSourceCitation,
     CaseUnverifiedCitation,
+    CitationMode,
 )
+from app.trace.evidence_units import EvidenceUnit, EvidenceUnitRegistry
 from app.trace.meaning import meaning_pointed
 from app.trace.quotes import (
     MAX_QUOTE_CHARS,
@@ -29,10 +31,11 @@ from app.trace.quotes import (
     nearest_passage,
     quote_occurrences,
     resolve_document_locator,
+    resolve_span_locator,
     tolerated_differences,
     without_edge_ellipses,
 )
-from app.trace.sentences import SentenceIndex, quote_context
+from app.trace.sentences import SentenceIndex, quote_context, span_context
 from app.trace.summary import summary_pieces
 from app.trace.trace import (
     CaseAnalysisTrace,
@@ -71,19 +74,34 @@ def resolve_case_trace(
     return bound_references(bound.model_copy(update={"grounding": grounding}), mitre_table)
 
 
+def case_registry(
+    source_bundle: CaseSourceBundle, followup_history: Sequence[CaseFollowupExchange] = ()
+) -> dict[str, CaseSourceItem]:
+    registry = {source.source_id: source for source in source_bundle.sources}
+    registry.update({item.source_id: item for item in followup_registry_items(followup_history)})
+    return registry
+
+
 def bound_claims(
     written: CaseAnalysisTrace | CaseProviderReading,
     source_bundle: CaseSourceBundle,
     followup_history: Sequence[CaseFollowupExchange] = (),
+    *,
+    citation_mode: CitationMode = "legacy_quote",
 ) -> tuple[CaseAnalysisTrace | CaseProviderReading, CaseGroundingReport]:
-    registry = {source.source_id: source for source in source_bundle.sources}
-    registry.update({item.source_id: item for item in followup_registry_items(followup_history)})
+    registry = case_registry(source_bundle, followup_history)
     document_context = build_document_source_context(source_bundle)
     search = QuoteSearch(registry)
+    evidence = EvidenceUnitRegistry(registry)
 
     claims = deduplicated_claims(written.claims)
     known_claim_ids = {claim.claim_id for claim in claims}
-    resolved_claims = [resolve_claim(claim, registry, document_context, search) for claim in claims]
+    resolved_claims = [
+        resolve_claim(
+            claim, registry, document_context, search, evidence, citation_mode=citation_mode
+        )
+        for claim in claims
+    ]
     resolved_claims, meaning = meaning_pointed(resolved_claims, registry)
 
     bound = written.model_copy(
@@ -101,6 +119,7 @@ def bound_claims(
         resolved_claims,
         registry,
         search=search,
+        evidence=evidence,
         claims_dropped=len(written.claims) - len(claims),
     ).model_copy(update=meaning.grounding())
     return bound, grounding
@@ -226,11 +245,13 @@ def grounding_report(
     registry: dict[str, CaseSourceItem],
     *,
     search: QuoteSearch | None = None,
+    evidence: EvidenceUnitRegistry | None = None,
     associations_outside_context: int = 0,
     associations_without_claim: int = 0,
     claims_dropped: int = 0,
 ) -> CaseGroundingReport:
     search = search or QuoteSearch(registry)
+    evidence = evidence or EvidenceUnitRegistry(registry)
 
     def all_citations(claims: list[CaseAnalysisClaim]) -> list[CaseSourceCitation]:
         return [
@@ -239,41 +260,72 @@ def grounding_report(
             for c in claim.supporting_citations + claim.contradicting_citations
         ]
 
-    claimed = all_citations(written)
-    verified = sum(
-        bool(fresh)
-        for claim in written
-        for citations in (claim.supporting_citations, claim.contradicting_citations)
-        for fresh in added_citations(citations, registry, search)
-    )
+    claimed = 0
+    verified = 0
     located = 0
     pointed = 0
     unfound = 0
-    for citation in claimed:
-        if citation.source_id not in registry:
-            unfound += 1
-        elif search.located(citation.source_id, citation.exact_quote) is not None:
-            located += 1
-        elif search.near(citation.source_id, citation.exact_quote) is not None:
-            pointed += 1
-        else:
-            unfound += 1
+    ids_claimed = 0
+    ids_resolved = 0
+    for claim in written:
+        for citations in (claim.supporting_citations, claim.contradicting_citations):
+            claimed += len(citations)
+            seen_units: set[tuple[str, int, int]] = set()
+            quoted: list[CaseSourceCitation] = []
+            for citation in citations:
+                outcome = evidence.resolve(citation.source_id, citation.evidence_unit_ids)
+                ids_claimed += len(outcome.units) + len(outcome.rejected)
+                ids_resolved += len(outcome.units)
+                if outcome.units:
+                    located += 1
+                    places = {(unit.source_id, unit.start, unit.end) for unit in outcome.units}
+                    verified += bool(places - seen_units)
+                    seen_units |= places
+                    continue
+                quoted.append(citation)
+                if (
+                    citation.source_id not in registry
+                    or not citation.exact_quote
+                    or (
+                        search.located(citation.source_id, citation.exact_quote) is None
+                        and search.near(citation.source_id, citation.exact_quote) is None
+                    )
+                ):
+                    unfound += 1
+                elif search.located(citation.source_id, citation.exact_quote) is not None:
+                    located += 1
+                else:
+                    pointed += 1
+            verified += sum(
+                bool(fresh) for fresh in added_citations(usable(quoted), registry, search)
+            )
+    duplicated = located - verified
 
     return CaseGroundingReport(
         claims=len(kept),
-        citations_claimed=len(claimed),
+        citations_claimed=claimed,
         citations_verified=verified,
         citations_pointed=pointed,
         citations_unfound=unfound,
         claims_without_citation=sum(1 for c in kept if not c.supporting_citations),
         claims_duplicated=claims_dropped,
-        citations_duplicated=located - verified,
+        citations_duplicated=duplicated,
         citations_marked=sum(1 for c in all_citations(kept) if c.review_flags),
         associations_outside_context=associations_outside_context,
         associations_without_claim=associations_without_claim,
+        evidence_ids_claimed=ids_claimed,
+        evidence_ids_resolved=ids_resolved,
+        evidence_ids_invalid=ids_claimed - ids_resolved,
+        claims_with_direct_evidence=sum(
+            1 for c in kept if any(item.pointer == "direct" for item in c.supporting_citations)
+        ),
         sources_cited=len({c.source_id for c in all_citations(kept)}),
         sources_total=len(registry),
     )
+
+
+def usable(citations: list[CaseSourceCitation]) -> list[CaseSourceCitation]:
+    return [citation for citation in citations if citation.exact_quote]
 
 
 def resolve_claim(
@@ -281,17 +333,37 @@ def resolve_claim(
     registry: dict[str, CaseSourceItem],
     document_context: object,
     search: QuoteSearch | None = None,
+    evidence: EvidenceUnitRegistry | None = None,
+    *,
+    citation_mode: CitationMode = "legacy_quote",
 ) -> CaseAnalysisClaim:
     search = search or QuoteSearch(registry)
-    supporting = resolved_citations(claim.supporting_citations, registry, document_context, search)
-    contradicting = resolved_citations(
-        claim.contradicting_citations, registry, document_context, search
+    evidence = evidence or EvidenceUnitRegistry(registry)
+    supporting, supporting_unresolved, supporting_quoted = resolved_role(
+        claim.supporting_citations,
+        "supporting",
+        registry,
+        document_context,
+        search,
+        evidence,
+        citation_mode,
+    )
+    contradicting, contradicting_unresolved, contradicting_quoted = resolved_role(
+        claim.contradicting_citations,
+        "contradicting",
+        registry,
+        document_context,
+        search,
+        evidence,
+        citation_mode,
     )
     unverified: list[CaseUnverifiedCitation] = []
     for item in [
         *(item.model_copy(update={"meaning_passage": None}) for item in claim.unverified_citations),
-        *unverified_citations(claim.supporting_citations, "supporting", registry, search),
-        *unverified_citations(claim.contradicting_citations, "contradicting", registry, search),
+        *supporting_unresolved,
+        *contradicting_unresolved,
+        *unverified_citations(supporting_quoted, "supporting", registry, search),
+        *unverified_citations(contradicting_quoted, "contradicting", registry, search),
     ]:
         if item not in unverified:
             unverified.append(item)
@@ -308,6 +380,70 @@ def resolve_claim(
             "contradicting_citations": contradicting,
             "unverified_citations": unverified,
         }
+    )
+
+
+def resolved_role(
+    citations: list[CaseSourceCitation],
+    role: Literal["supporting", "contradicting"],
+    registry: dict[str, CaseSourceItem],
+    document_context: object,
+    search: QuoteSearch,
+    evidence: EvidenceUnitRegistry,
+    citation_mode: CitationMode,
+) -> tuple[list[CaseSourceCitation], list[CaseUnverifiedCitation], list[CaseSourceCitation]]:
+    direct: dict[tuple[str, int, int], CaseSourceCitation] = {}
+    unresolved: list[CaseUnverifiedCitation] = []
+    quoted: list[CaseSourceCitation] = []
+    for citation in citations:
+        if not citation.evidence_unit_ids:
+            quoted.append(citation)
+            continue
+        outcome = evidence.resolve(citation.source_id, citation.evidence_unit_ids)
+        for unit in outcome.units:
+            direct.setdefault(
+                (unit.source_id, unit.start, unit.end),
+                direct_citation(unit, registry[unit.source_id], document_context, search),
+            )
+        unresolved.extend(
+            CaseUnverifiedCitation(
+                source_id=citation.source_id,
+                role=role,
+                evidence_unit_ids=[reference],
+                reason=reason,
+                pointer="unresolved",
+            )
+            for reference, reason in outcome.rejected
+        )
+        if not outcome.units and citation.exact_quote:
+            quoted.append(citation)
+    recovered = resolved_citations(usable(quoted), registry, document_context, search)
+    if citation_mode == "evidence_unit":
+        for citation in recovered:
+            citation.pointer = "recovered"
+    direct_quotes = {(item.source_id, item.exact_quote) for item in direct.values()}
+    kept = [
+        *direct.values(),
+        *(item for item in recovered if (item.source_id, item.exact_quote) not in direct_quotes),
+    ]
+    return kept, unresolved, usable(quoted)
+
+
+def direct_citation(
+    unit: EvidenceUnit,
+    source: CaseSourceItem,
+    document_context: object,
+    search: QuoteSearch,
+) -> CaseSourceCitation:
+    return CaseSourceCitation(
+        source_id=unit.source_id,
+        exact_quote=unit.text,
+        evidence_unit_ids=[unit.unit_id],
+        start=unit.start,
+        end=unit.end,
+        pointer="direct",
+        context=search.span_context(unit.source_id, unit.start, unit.end),
+        **resolve_span_locator(unit.source_id, unit.start, unit.end, source.text, document_context),
     )
 
 
@@ -411,6 +547,11 @@ class QuoteSearch:
                 self.sentences[source_id] = SentenceIndex(self.texts[source_id].text)
             self.contexts[key] = quote_context(self.sentences[source_id], quote)
         return self.contexts[key]
+
+    def span_context(self, source_id: str, start: int, end: int) -> CaseQuoteContext | None:
+        if source_id not in self.sentences:
+            self.sentences[source_id] = SentenceIndex(self.texts[source_id].text)
+        return span_context(self.sentences[source_id], start, end)
 
     def near(self, source_id: str, quote: str) -> CaseNearPassage | None:
         key = (source_id, quote)
@@ -530,6 +671,7 @@ def context_technique_ids(value: object) -> set[str]:
 
 __all__ = [
     "bound_claims",
+    "case_registry",
     "bound_references",
     "context_technique_ids",
     "followup_registry_items",

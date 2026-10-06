@@ -257,6 +257,14 @@ trace/                  what the analysis, chat and reports share
                         loaded once under a lock, one pair at a time, a pair of
                         more than 512 tokens skipped and never cut; a missing or
                         broken model is NliUnavailable with a reason
+  evidence_units.py     the primary citation path: a source (and each follow-up
+                        answer) is cut into addressable units with the
+                        sentence spans, at most MAX_QUOTE_CHARS each, ids
+                        `<source_id>:U-0001`; the registry resolves a cited id
+                        to its source offsets and says why it rejects one
+                        (malformed, unknown_source, wrong_source,
+                        unknown_unit). Nothing is persisted: units are cut again
+                        from the stored source text, which is deterministic
   sentences.py          the sentence around a quotation: PyThaiNLP crfcut, line
                         by line; the encoder gate splits with it too
   bind.py               bind a written trace to the case; count what did not bind;
@@ -467,6 +475,22 @@ The RAG query is not the trigger text alone: `retrieval_query` in
 (`build_rag_query`) when there are none, and appends each answered follow-up's
 question and answer. `MITRE_GATE_MODEL_PATH` points at the encoder's weights;
 `research/mitre_gate/README.md` has the measurements.
+
+### Evidence-unit citations (backend)
+
+`CITATION_MODE` (`evidence_unit` by default, or `legacy_quote`) picks how the reading cites its sources.
+- `evidence_unit`: the reading request sends each source as `evidence_units` (`unit_id`, `text`) instead of one text,
+  and the model cites `evidence_unit_ids` (at most 8 per citation, each of the cited source) and writes no quotation.
+  `bound_claims` resolves every id to `source.text[start:end]` before the judgement: the stored citation keeps its
+  usual shape (`exact_quote` is source text) plus `evidence_unit_ids`, `start`, `end` and `pointer`.
+- `pointer` is `direct` (a valid unit id), `recovered` (no valid id; the quote tiers located a written quote, only set
+  in `evidence_unit` mode), or `unresolved` (an id that could not be resolved, kept as an unverified citation with an
+  empty `written_quote`, its `evidence_unit_ids` and a `reason`; the claim loses that citation and is
+  `not_confirmed` when none is left). A model never writes `pointer`, `start` or `end`, and neither model is shown them.
+- The grounding report counts `evidence_ids_claimed`, `evidence_ids_resolved`, `evidence_ids_invalid` and
+  `claims_with_direct_evidence`; the evidence id resolution rate is resolved over claimed.
+- The quote tiers, the near passage and the meaning pointer are unchanged and still serve legacy citations, chat
+  citations and any citation without a valid id. The chat and the report read the same stored citation shape.
 
 ### Meaning Pointer (backend)
 

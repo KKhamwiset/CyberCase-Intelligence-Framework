@@ -201,6 +201,11 @@ async def stored_kinds(factory, case_id) -> list[str]:
         return [message.message_kind for message in rows]
 
 
+@pytest.fixture(autouse=True)
+def legacy_quote_citations(monkeypatch):
+    monkeypatch.setattr(settings, "citation_mode", "legacy_quote")
+
+
 FILLER = " ".join(f"Routine log line {n} recorded nothing unusual." for n in range(80))
 LONG_TEXT = f"{HEAD} {FILLER} {TAIL}"
 MARKED_WORDS = [f"tok{n:03d}" for n in range(250)]
